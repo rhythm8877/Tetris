@@ -1,0 +1,21 @@
+CC      = gcc
+CFLAGS  = -Wall -Wextra -Ilibs
+
+LIB_SRCS  = libs/math.c libs/string.c libs/memory.c libs/screen.c libs/keyboard.c
+GAME_SRCS = game/main.c
+SRCS      = $(LIB_SRCS) $(GAME_SRCS)
+OBJS      = $(SRCS:.c=.o)
+TARGET    = tetris
+
+all: $(TARGET)
+
+$(TARGET): $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $^
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+clean:
+	rm -f $(OBJS) $(TARGET)
+
+.PHONY: all clean
