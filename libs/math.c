@@ -8,8 +8,7 @@ int my_mul(int a, int b){
     int neg;
     int ua;
     int ub;
-    int result;
-    int i;
+    int result = 0;
 
     if (a == 0 || b == 0)
         return 0;
