@@ -7,4 +7,4 @@ void  mem_init(void);
 void *my_alloc(int size);
 void  my_dealloc(void *ptr);
 
-#endif /* MY_MEMORY_H */
+#endif

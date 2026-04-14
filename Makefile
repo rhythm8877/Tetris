@@ -1,5 +1,5 @@
 CC      = gcc
-CFLAGS  = -Wall -Wextra -Ilibs
+CFLAGS  = -Wall -Wextra -g -Ilibs
 
 LIB_SRCS  = libs/math.c libs/string.c libs/memory.c libs/screen.c libs/keyboard.c
 GAME_SRCS = game/main.c
@@ -15,7 +15,10 @@ $(TARGET): $(OBJS)
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+run: $(TARGET)
+	./$(TARGET)
+
 clean:
 	rm -f $(OBJS) $(TARGET)
 
-.PHONY: all clean
+.PHONY: all clean run

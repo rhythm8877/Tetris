@@ -8,4 +8,4 @@ void scr_puts(int row, int col, const char *s);
 void scr_render_int(int row, int col, int n);
 void scr_draw_border(int top, int left, int height, int width);
 
-#endif /* MY_SCREEN_H */
+#endif

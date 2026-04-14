@@ -9,4 +9,4 @@ int my_clamp(int val, int min, int max);
 int my_max(int a, int b);
 int my_min(int a, int b);
 
-#endif /* MY_MATH_H */
+#endif
