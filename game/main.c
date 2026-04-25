@@ -66,7 +66,7 @@ int main(void)
         if (key == KEY_DOWN)
             current->row++;
 
-        current->col = my_clamp(current->col, 0, BOARD_W - 4);
+        current->col = my_clamp(current->col, 1, BOARD_W - 4);
         current->row = my_clamp(current->row, 0, BOARD_H - 1);
 
         scr_clear();
