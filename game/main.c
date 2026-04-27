@@ -30,13 +30,15 @@
 #define TICK_MS          50
 #define BOARD_TOP        1
 #define BOARD_LEFT       1
-#define SIDE_COL         (2 * BOARD_W + 5)
+#define SIDE_COL         (BOARD_LEFT + CELL_W * BOARD_W + 5)
 
 /* ------------------------------------------------------------------ */
 /*  Globals — only flags touched by signal handlers                    */
 /* ------------------------------------------------------------------ */
 
-static volatile sig_atomic_t g_quit      = 0;
+/* g_quit is referenced from menu.c so the menu polling loops can break
+ * out on SIGINT/SIGTERM. Keep file-scope but with external linkage. */
+volatile sig_atomic_t        g_quit      = 0;
 static volatile sig_atomic_t g_winch     = 0;
 static int                   did_cleanup = 0;
 
@@ -93,9 +95,12 @@ static void cleanup(void)
 
 static void render_cell_block(int row, int col, int color_id)
 {
+    /* Three-char cell: "[ ]" — left bracket, space, right bracket.
+     * The brackets are coloured so the cell looks like a wide block. */
     scr_set_color(color_id);
     scr_putchar(row, col,     '[');
-    scr_putchar(row, col + 1, ']');
+    scr_putchar(row, col + 1, ' ');
+    scr_putchar(row, col + 2, ']');
     scr_set_color(0);
 }
 
@@ -103,6 +108,7 @@ static void render_empty_block(int row, int col)
 {
     scr_putchar(row, col,     ' ');
     scr_putchar(row, col + 1, ' ');
+    scr_putchar(row, col + 2, ' ');
 }
 
 static void render_preview(int top, int left, const Piece *p)
@@ -112,7 +118,7 @@ static void render_preview(int top, int left, const Piece *p)
     for (dr = 0; dr < PIECE_BOX; dr++) {
         for (dc = 0; dc < PIECE_BOX; dc++) {
             int row = top + dr;
-            int col = left + my_mul(dc, 2);
+            int col = left + my_mul(dc, CELL_W);
             if (p && piece_cell(p->type, p->rot, dr, dc))
                 render_cell_block(row, col, p->color_id);
             else
@@ -134,14 +140,16 @@ static void render_frame(const Board *b, const Piece *cur, const Piece *nxt,
     scr_clear();
 
     /* Playfield border */
-    scr_draw_border(BOARD_TOP, BOARD_LEFT, BOARD_H + 2, my_mul(2, BOARD_W) + 2);
+    scr_draw_border(BOARD_TOP, BOARD_LEFT,
+                    BOARD_H + 2,
+                    my_mul(CELL_W, BOARD_W) + 2);
 
     /* Locked cells */
     for (r = 0; r < BOARD_H; r++) {
         for (c = 0; c < BOARD_W; c++) {
             int color = b->cells[my_mul(r, BOARD_W) + c];
             int row   = BOARD_TOP + 1 + r;
-            int col   = BOARD_LEFT + 1 + my_mul(c, 2);
+            int col   = BOARD_LEFT + 1 + my_mul(c, CELL_W);
             if (color != 0)
                 render_cell_block(row, col, color);
             else
@@ -157,7 +165,7 @@ static void render_frame(const Board *b, const Piece *cur, const Piece *nxt,
                 int cc = cur->col + dc;
                 if (rr >= 0 && rr < BOARD_H && cc >= 0 && cc < BOARD_W) {
                     int row = BOARD_TOP + 1 + rr;
-                    int col = BOARD_LEFT + 1 + my_mul(cc, 2);
+                    int col = BOARD_LEFT + 1 + my_mul(cc, CELL_W);
                     render_cell_block(row, col, cur->color_id);
                 }
             }
@@ -205,6 +213,19 @@ static void play_one_game(const char *name, ScoreTable *table)
     b   = board_new();
     cur = piece_new(rng_bag_next());
     nxt = piece_new(rng_bag_next());
+
+    /* Force a full redraw on the first frame so any leftover content
+     * from the welcome screen (including terminal-echoed typed name
+     * that bypassed our back buffer) is wiped before we paint the
+     * game. */
+    scr_force_full_redraw();
+
+    /* Drop any SIGALRM ticks that accumulated while the user was on
+     * the menu / name-entry screens. Without this, the menu phase's
+     * 5–30 seconds of pending ticks all fire on the first gameplay
+     * iteration, instantly gravity-dropping the first piece (and
+     * sometimes locking it before the first frame even renders). */
+    tm_reset_ticks();
 
     while (!g_quit) {
         int k;
@@ -352,6 +373,11 @@ int main(void)
     table = score_load(SCORES_PATH);
 
     while (!g_quit) {
+        /* Always start each menu transition with a known-clean canvas.
+         * After play_one_game returns, front buffer holds the game-over
+         * frame; without this the title's diff-emission would leave
+         * gameplay cells visible at unwritten positions. */
+        scr_force_full_redraw();
         char choice = menu_show_title();
         if (choice == 'q')
             break;

@@ -14,6 +14,7 @@ void          tm_init(void);
 void          tm_stop(void);
 void          tm_resume(void);
 int           tm_consume_tick(void);
+void          tm_reset_ticks(void);   /* atomically clears the pending-tick counter */
 unsigned long tm_now_ms(void);
 int           tm_fall_period_ms(int level);
 

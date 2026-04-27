@@ -99,6 +99,21 @@ int tm_consume_tick(void)
     return had;
 }
 
+void tm_reset_ticks(void)
+{
+    sigset_t block, prev;
+
+    /* Block SIGALRM around the write so the handler cannot race with
+     * us and resurrect a non-zero counter. */
+    sigemptyset(&block);
+    sigaddset(&block, SIGALRM);
+    sigprocmask(SIG_BLOCK, &block, &prev);
+
+    g_ticks = 0;
+
+    sigprocmask(SIG_SETMASK, &prev, 0);
+}
+
 unsigned long tm_now_ms(void)
 {
     struct timeval now;

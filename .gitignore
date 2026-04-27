@@ -1,6 +1,17 @@
-# Build artifacts
+# build artifacts
 *.o
-tetris
+/tetris
+/libs/*.o
+/game/*.o
 
-*.md
-!README.md
+# leaderboard data (committed empty by default; live data ignored)
+/data/*.dat
+/data/*.dat.tmp
+
+# editor noise
+.DS_Store
+.vscode/
+.idea/
+
+# macOS
+*.dSYM/

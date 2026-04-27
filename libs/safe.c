@@ -29,8 +29,9 @@ void safe_panic(const char *msg, const char *file, int line)
      * actually visible and the shell prompt that follows works. */
     kb_restore();
 
-    /* Clear screen + home cursor. See header comment for rationale. */
-    fprintf(stderr, "\033[2J\033[H");
+    /* Leave alternate screen + show cursor + reset attrs so the user's
+     * pre-tetris terminal is restored before the FATAL line lands. */
+    fputs("\033[?1049l\033[?25h\033[0m", stderr);
     fprintf(stderr, "[FATAL] %s @ %s:%d\n",
             (msg  != 0) ? msg  : "(null)",
             (file != 0) ? file : "(null)",

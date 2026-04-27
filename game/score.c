@@ -169,9 +169,18 @@ int score_insert(ScoreTable *t,
     ScoreRecord candidate;
     int         idx;
     int         i;
+    char       *cp;
 
     safe_assert(t != 0);
     safe_assert(name != 0);
+
+    /* Zero the entire candidate first. my_strncpy null-terminates but
+     * does not pad — without zeroing, name[strlen+1 .. 15] keeps stack
+     * garbage that gets serialised to scores.dat and confuses every
+     * downstream consumer (CRC, debug dumps, hex tools). */
+    cp = (char *)&candidate;
+    for (i = 0; i < (int)sizeof(ScoreRecord); i++)
+        cp[i] = 0;
 
     /* Build the sanitised name in a local buffer so we never trust the
      * caller-supplied string to be safe to write into the file. */
@@ -219,12 +228,29 @@ void score_render(const ScoreTable *t, int top_row, int left_col)
 
     safe_assert(t != 0);
 
-    scr_puts(top_row, left_col, "RANK  NAME             SCORE  LV  LN");
+    /* Column layout (offsets relative to left_col):
+     *      0..3   RANK    (1-2 digits)
+     *      6..21  NAME    (up to SCORE_NAME_MAX chars)
+     *     24..31  SCORE   (up to ~10 digits)
+     *     33..36  LV
+     *     38..41  LN
+     */
+
+    scr_puts(top_row, left_col +  0, "RANK");
+    scr_puts(top_row, left_col +  6, "NAME");
+    scr_puts(top_row, left_col + 24, "SCORE");
+    scr_puts(top_row, left_col + 33, "LV");
+    scr_puts(top_row, left_col + 38, "LN");
 
     for (i = 0; i < t->count; i++) {
-        scr_puts(top_row + 1 + i, left_col, t->records[i].name);
-        scr_render_int(top_row + 1 + i,
-                       left_col + SCORE_NAME_MAX + 1,
-                       t->records[i].score);
+        char buf[12];
+        int  row = top_row + 1 + i;
+
+        my_itoa(i + 1, buf);
+        scr_puts(row, left_col +  0, buf);
+        scr_puts(row, left_col +  6, t->records[i].name);
+        scr_render_int(row, left_col + 24, t->records[i].score);
+        scr_render_int(row, left_col + 33, t->records[i].level);
+        scr_render_int(row, left_col + 38, t->records[i].lines);
     }
 }

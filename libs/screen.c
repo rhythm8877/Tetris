@@ -66,8 +66,14 @@ void scr_init(void)
     env = getenv("COLOR");
     color_enabled = !(env && env[0] == '0' && env[1] == '\0');
 
-    fputs("\033[2J\033[H", stdout);   /* one-time full clear  */
-    fputs("\033[?25l", stdout);       /* hide cursor          */
+    /* Switch to the alternate screen buffer so tetris draws on a clean
+     * canvas and the user's zsh prompt / scrollback are not disturbed.
+     * On scr_shutdown we exit alternate screen and the original view is
+     * restored verbatim. Every modern terminal (macOS Terminal, iTerm2,
+     * gnome-terminal, xterm, alacritty, kitty) supports ?1049. */
+    fputs("\033[?1049h", stdout);     /* enter alternate screen */
+    fputs("\033[2J\033[H", stdout);   /* clear + home           */
+    fputs("\033[?25l", stdout);       /* hide cursor            */
     fflush(stdout);
 }
 
@@ -77,9 +83,9 @@ void scr_init(void)
 
 void scr_shutdown(void)
 {
-    fputs("\033[?25h", stdout);       /* show cursor          */
-    fputs("\033[0m", stdout);         /* reset attributes     */
-    fputs("\033[2J\033[H", stdout);   /* clear screen         */
+    fputs("\033[0m", stdout);         /* reset attributes       */
+    fputs("\033[?25h", stdout);       /* show cursor            */
+    fputs("\033[?1049l", stdout);     /* exit alternate screen  */
     fflush(stdout);
 
     my_dealloc(back);
@@ -110,7 +116,12 @@ void scr_clear(void)
         attr_back[i] = 0;
     }
 
-    force_full = 1;
+    /* No force_full here. The cell-level diff in scr_present will emit
+     * spaces over any previous content (front holds the last-painted
+     * frame). Setting force_full would cause a real \033[2J\033[H every
+     * single render_frame call (~60 times/sec) — that is the flicker
+     * the user saw. Only scr_force_full_redraw() (called from SIGWINCH
+     * or explicit transitions) sets force_full now. */
 }
 
 /* ------------------------------------------------------------------ */
@@ -210,6 +221,20 @@ void scr_present(void)
     if (!back)
         return;
 
+    /* On a forced full-redraw, hard-clear the viewport with a real
+     * \033[2J\033[H, then reset the front buffer to all-spaces. The
+     * cell-level diff below will then emit only non-blank cells, which
+     * is both deterministic (the terminal is guaranteed clean) and
+     * dramatically smaller than emitting all 30 * 80 cells. */
+    if (force_full) {
+        fputs("\033[0m\033[2J\033[H", stdout);
+        for (idx = 0; idx < BUF_SIZE; idx++) {
+            front[idx]      = ' ';
+            attr_front[idx] = 0;
+        }
+        force_full = 0;
+    }
+
     last_row      = -1;
     last_col      = -1;
     emitted_color = -1;
@@ -220,8 +245,7 @@ void scr_present(void)
         {
             idx = my_mul(row, SCR_COLS) + col;
 
-            if (!force_full
-                && back[idx] == front[idx]
+            if (back[idx] == front[idx]
                 && attr_back[idx] == attr_front[idx])
             {
                 continue;
@@ -252,7 +276,6 @@ void scr_present(void)
         }
     }
 
-    force_full = 0;
     fflush(stdout);
 }
 

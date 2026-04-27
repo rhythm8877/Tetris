@@ -25,6 +25,7 @@
 
 #include <stdio.h>
 #include <unistd.h>
+#include <signal.h>
 
 /* --------------------------------------------------------------------- */
 /*  Internal helpers                                                      */
@@ -107,11 +108,21 @@ static const char *TITLE_ART[5] = {
 /*  Public API                                                            */
 /* --------------------------------------------------------------------- */
 
+/* SIGINT/SIGTERM handler in main.c sets this; we treat the flag as
+ * read-only here. Declared via menu.h includer chain — main.c already
+ * has it as `volatile sig_atomic_t g_quit`. We use an extern reference. */
+extern volatile sig_atomic_t g_quit;
+
 char menu_show_title(void)
 {
     int i;
     int k;
 
+    /* Always start a screen transition from a fully-cleared terminal.
+     * This is the only reliable way to defeat ghost text from cooked-
+     * mode echo (kb_readline) and from cells whose front-buffer state
+     * disagrees with what the terminal actually shows. */
+    scr_force_full_redraw();
     scr_clear();
     for (i = 0; i < 5; i++)
         center_puts(2 + i, TITLE_ART[i]);
@@ -123,13 +134,14 @@ char menu_show_title(void)
     center_puts(16, "Authors: Rhythm  Amod  Sai Kiran");
     scr_present();
 
-    for (;;) {
+    while (!g_quit) {
         k = kb_pressed();
         if (k == 'n' || k == 'N') return 'n';
         if (k == 'l' || k == 'L') return 'l';
         if (k == 'q' || k == 'Q') return 'q';
         usleep(16000);
     }
+    return 'q';                /* SIGINT/SIGTERM → treat as quit */
 }
 
 void menu_show_name_entry(char *out_name)
@@ -140,6 +152,7 @@ void menu_show_name_entry(char *out_name)
 
     safe_assert(out_name != 0);
 
+    scr_force_full_redraw();
     scr_clear();
     center_puts(4, "Enter name (1-12 chars, A-Z 0-9 _ -):");
     scr_present();
@@ -154,6 +167,13 @@ void menu_show_name_entry(char *out_name)
     my_strncpy(out_name, buf, SCORE_NAME_MAX);
 
     cursor_hide();
+
+    /* kb_readline ran in cooked mode and the terminal echoed typed
+     * characters directly, but our front buffer never saw those bytes.
+     * Force a full redraw so the next scr_present clears the terminal
+     * and re-emits everything from a known-clean state — otherwise
+     * the typed name lingers as ghost text behind every later screen. */
+    scr_force_full_redraw();
 
     /* Confirmation. We have no sprintf/strcat, so we paint the line
      * in three pieces and advance col by my_strlen each time. */
@@ -176,7 +196,7 @@ void menu_show_name_entry(char *out_name)
     }
     scr_present();
 
-    for (;;) {
+    while (!g_quit) {
         k = kb_pressed();
         if (k == KEY_ENTER)
             break;
@@ -190,13 +210,17 @@ void menu_show_leaderboard(const ScoreTable *t)
 
     safe_assert(t != 0);
 
+    scr_force_full_redraw();
     scr_clear();
     center_puts(1, "T E T R I S - Leaderboard");
     score_render(t, 4, 5);
-    center_puts(SCR_ROWS - 2, "Press B to go back");
+    /* Position the prompt just below the records so it remains visible
+     * even on shorter terminals. SCORE_TOP_N rows of records + header
+     * + 2 row gap = top_row + N + 2. */
+    center_puts(4 + SCORE_TOP_N + 2, "Press B to go back");
     scr_present();
 
-    for (;;) {
+    while (!g_quit) {
         k = kb_pressed();
         if (k == 'b' || k == 'B')
             return;
@@ -222,7 +246,7 @@ void menu_render_game_over(int score, int lines)
     const int  top   = 8;
     const int  bot   = 12;
     const int  left  = 1;
-    const int  width = 2 * BOARD_W + 2;      /* 22 */
+    const int  width = CELL_W * BOARD_W + 2;      /* 22 */
     int        pos;
     int        col;
     int        total;

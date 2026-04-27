@@ -17,6 +17,12 @@
 #define BOARD_W 10
 #define BOARD_H 20
 
+/* Visual cell width in terminal columns. Phase 2 uses 3 (was 2 in early
+ * Phase 2 builds) — wider blocks are easier to track and keep the
+ * playfield rectangle visually substantial without changing the
+ * 10-wide gameplay grid. */
+#define CELL_W  3
+
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
