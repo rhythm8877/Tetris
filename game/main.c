@@ -1,13 +1,13 @@
 /*
  * game/main.c
  * Author : Amod
- * Desc   : Phase 1 Tetris — placeholder 2x2 piece, keyboard movement.
+ * Desc   : Phase 2 Tetris — full game wiring (menu, gameplay, scoring, hold).
  * Date   : {{DATE}}
  */
 
 #include <stdio.h>
-#include <signal.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <unistd.h>
 
 #include "../libs/math.h"
@@ -15,19 +15,65 @@
 #include "../libs/memory.h"
 #include "../libs/screen.h"
 #include "../libs/keyboard.h"
+#include "../libs/safe.h"
+#include "../libs/timer.h"
+#include "../libs/rng.h"
+#include "../libs/fileio.h"
 
-#define BOARD_W 10
-#define BOARD_H 20
+#include "piece.h"
+#include "board.h"
+#include "score.h"
+#include "menu.h"
 
-typedef struct {
-    int row;
-    int col;
-    int type;
-} Piece;
+#define SCORES_PATH      "data/scores.dat"
+#define FRAME_SLEEP_US   16000
+#define TICK_MS          50
+#define BOARD_TOP        1
+#define BOARD_LEFT       1
+#define SIDE_COL         (2 * BOARD_W + 5)
 
-static Piece *current = 0;
-static int did_cleanup = 0;
-static volatile sig_atomic_t g_quit = 0;
+/* ------------------------------------------------------------------ */
+/*  Globals — only flags touched by signal handlers                    */
+/* ------------------------------------------------------------------ */
+
+static volatile sig_atomic_t g_quit      = 0;
+static volatile sig_atomic_t g_winch     = 0;
+static int                   did_cleanup = 0;
+
+/* ------------------------------------------------------------------ */
+/*  Signal handlers — async-signal-safe (flag-only)                    */
+/* ------------------------------------------------------------------ */
+
+static void on_quit(int sig)
+{
+    (void)sig;
+    g_quit = 1;
+}
+
+static void on_winch(int sig)
+{
+    (void)sig;
+    g_winch = 1;
+}
+
+static void install_signals(void)
+{
+    struct sigaction sa;
+
+    sa.sa_flags = SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+
+    sa.sa_handler = on_quit;
+    sigaction(SIGINT,  &sa, 0);
+    sigaction(SIGTERM, &sa, 0);
+
+    sa.sa_handler = on_winch;
+    sigaction(SIGWINCH, &sa, 0);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Cleanup                                                            */
+/* ------------------------------------------------------------------ */
 
 static void cleanup(void)
 {
@@ -35,80 +81,291 @@ static void cleanup(void)
         return;
     did_cleanup = 1;
 
-    if (current) {
-        my_dealloc(current);
-        current = 0;
-    }
+    tm_stop();
     kb_restore();
-    scr_clear();
+    scr_shutdown();
+    fprintf(stderr, "Game exited cleanly.\n");
 }
 
-static void sigint_handler(int sig)
+/* ------------------------------------------------------------------ */
+/*  Rendering helpers                                                  */
+/* ------------------------------------------------------------------ */
+
+static void render_cell_block(int row, int col, int color_id)
 {
-    (void)sig;
-    g_quit = 1;
+    scr_set_color(color_id);
+    scr_putchar(row, col,     '[');
+    scr_putchar(row, col + 1, ']');
+    scr_set_color(0);
 }
 
-int main(void)
+static void render_empty_block(int row, int col)
 {
-    int key;
-    int r;
-    int c;
-    struct sigaction sa;
+    scr_putchar(row, col,     ' ');
+    scr_putchar(row, col + 1, ' ');
+}
 
-    mem_init();
-    kb_init();
-    atexit(cleanup);
+static void render_preview(int top, int left, const Piece *p)
+{
+    int dr, dc;
 
-    sa.sa_handler = sigint_handler;
-    sa.sa_flags   = SA_RESTART;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGINT,  &sa, 0);
-    sigaction(SIGTERM, &sa, 0);
+    for (dr = 0; dr < PIECE_BOX; dr++) {
+        for (dc = 0; dc < PIECE_BOX; dc++) {
+            int row = top + dr;
+            int col = left + my_mul(dc, 2);
+            if (p && piece_cell(p->type, p->rot, dr, dc))
+                render_cell_block(row, col, p->color_id);
+            else
+                render_empty_block(row, col);
+        }
+    }
+}
+
+static void render_frame(const Board *b, const Piece *cur, const Piece *nxt,
+                         const Piece *hold, const char *name)
+{
+    int r, c, dr, dc;
+
+    if (g_winch) {
+        g_winch = 0;
+        scr_force_full_redraw();
+    }
 
     scr_clear();
 
-    current       = (Piece *)my_alloc(sizeof(Piece));
-    current->row  = 0;
-    current->col  = my_div(BOARD_W, 2);
-    current->type = 0;
+    /* Playfield border */
+    scr_draw_border(BOARD_TOP, BOARD_LEFT, BOARD_H + 2, my_mul(2, BOARD_W) + 2);
+
+    /* Locked cells */
+    for (r = 0; r < BOARD_H; r++) {
+        for (c = 0; c < BOARD_W; c++) {
+            int color = b->cells[my_mul(r, BOARD_W) + c];
+            int row   = BOARD_TOP + 1 + r;
+            int col   = BOARD_LEFT + 1 + my_mul(c, 2);
+            if (color != 0)
+                render_cell_block(row, col, color);
+            else
+                render_empty_block(row, col);
+        }
+    }
+
+    /* Active piece */
+    for (dr = 0; dr < PIECE_BOX; dr++) {
+        for (dc = 0; dc < PIECE_BOX; dc++) {
+            if (piece_cell(cur->type, cur->rot, dr, dc)) {
+                int rr = cur->row + dr;
+                int cc = cur->col + dc;
+                if (rr >= 0 && rr < BOARD_H && cc >= 0 && cc < BOARD_W) {
+                    int row = BOARD_TOP + 1 + rr;
+                    int col = BOARD_LEFT + 1 + my_mul(cc, 2);
+                    render_cell_block(row, col, cur->color_id);
+                }
+            }
+        }
+    }
+
+    /* Side panel */
+    scr_puts(BOARD_TOP,      SIDE_COL, "NEXT:");
+    render_preview(BOARD_TOP + 1, SIDE_COL, nxt);
+
+    scr_puts(BOARD_TOP + 6,  SIDE_COL, "HOLD:");
+    if (hold)
+        render_preview(BOARD_TOP + 7, SIDE_COL, hold);
+    else
+        scr_puts(BOARD_TOP + 7, SIDE_COL, "-");
+
+    scr_puts(BOARD_TOP + 12, SIDE_COL, "NAME:");
+    scr_puts(BOARD_TOP + 12, SIDE_COL + 6, name);
+
+    scr_puts(BOARD_TOP + 14, SIDE_COL, "SCORE:");
+    scr_render_int(BOARD_TOP + 14, SIDE_COL + 7, b->score);
+
+    scr_puts(BOARD_TOP + 15, SIDE_COL, "LEVEL:");
+    scr_render_int(BOARD_TOP + 15, SIDE_COL + 7, b->level);
+
+    scr_puts(BOARD_TOP + 16, SIDE_COL, "LINES:");
+    scr_render_int(BOARD_TOP + 16, SIDE_COL + 7, b->lines);
+
+    scr_present();
+}
+
+/* ------------------------------------------------------------------ */
+/*  Gameplay                                                           */
+/* ------------------------------------------------------------------ */
+
+static void play_one_game(const char *name, ScoreTable *table)
+{
+    Board *b;
+    Piece *cur;
+    Piece *nxt;
+    Piece *hold            = (Piece *)0;
+    int    hold_used       = 0;
+    int    gravity_counter = 0;
+
+    b   = board_new();
+    cur = piece_new(rng_bag_next());
+    nxt = piece_new(rng_bag_next());
 
     while (!g_quit) {
-        key = kb_pressed();
+        int k;
 
-        if (key == 'q')
-            break;
-        if (key == KEY_LEFT)
-            current->col--;
-        if (key == KEY_RIGHT)
-            current->col++;
-        if (key == KEY_DOWN)
-            current->row++;
+        /* Drain pending gravity ticks */
+        while (tm_consume_tick()) {
+            gravity_counter++;
+            if (my_mul(gravity_counter, TICK_MS) >= tm_fall_period_ms(b->level)) {
+                gravity_counter = 0;
+                if (board_can_place(b, cur, +1, 0, 0)) {
+                    cur->row++;
+                } else {
+                    int n;
 
-        current->col = my_clamp(current->col, 0, BOARD_W - 2);
-        current->row = my_clamp(current->row, 0, BOARD_H - 1);
+                    board_lock(b, cur);
+                    n = board_clear_lines(b);
+                    if (n > 0)
+                        board_apply_score(b, n);
+                    b->lines += n;
+                    board_update_level(b);
 
-        scr_clear();
-        scr_draw_border(0, 0, BOARD_H + 2, 2 * BOARD_W + 2);
+                    piece_free(cur);
+                    cur = nxt;
+                    nxt = piece_new(rng_bag_next());
+                    hold_used = 0;
 
-        for (r = 0; r < 2; r++) {
-            for (c = 0; c < 2; c++) {
-                scr_putchar(current->row + 1 + r,
-                            (current->col + c) * 2 + 1, '[');
-                scr_putchar(current->row + 1 + r,
-                            (current->col + c) * 2 + 2, ']');
+                    if (!board_can_place(b, cur, 0, 0, 0)) {
+                        menu_render_game_over(b->score, b->lines);
+                        scr_present();
+                        while (!g_quit) {
+                            int kk = kb_pressed();
+                            if (kk == KEY_ENTER)
+                                break;
+                            usleep(FRAME_SLEEP_US);
+                        }
+                        goto end_game;
+                    }
+                }
             }
         }
 
-        scr_puts(1, 2 * BOARD_W + 4, "SCORE:");
-        scr_render_int(1, 2 * BOARD_W + 11, 0);
-        scr_puts(2, 2 * BOARD_W + 4, "LEVEL:");
-        scr_render_int(2, 2 * BOARD_W + 11, 1);
+        /* Input */
+        k = kb_pressed();
+        if (k == 'q')
+            goto end_game;
 
-        fflush(stdout);
-        usleep(50000);
+        if (k == 'p') {
+            tm_stop();
+            menu_render_pause_overlay();
+            scr_present();
+            while (!g_quit) {
+                int kk = kb_pressed();
+                if (kk == 'p' || kk == 'P')
+                    break;
+                usleep(FRAME_SLEEP_US);
+            }
+            tm_resume();
+            scr_force_full_redraw();
+            continue;
+        }
+
+        if (k == KEY_LEFT  && board_can_place(b, cur, 0, -1, 0))
+            cur->col--;
+        if (k == KEY_RIGHT && board_can_place(b, cur, 0, +1, 0))
+            cur->col++;
+        if (k == KEY_DOWN  && board_can_place(b, cur, +1, 0, 0)) {
+            cur->row++;
+            b->score++;
+        }
+
+        if (k == KEY_UP) {
+            int i;
+            int n_kicks = piece_kick_count(cur->type);
+            for (i = 0; i < n_kicks; i++) {
+                int dr, dc;
+                piece_kick_offset(cur->type, i, &dr, &dc);
+                if (board_can_place(b, cur, dr, dc, +1)) {
+                    cur->row += dr;
+                    cur->col += dc;
+                    piece_rotate_cw(cur);
+                    break;
+                }
+            }
+        }
+
+        if (k == KEY_SPACE) {
+            int drop = 0;
+            while (board_can_place(b, cur, drop + 1, 0, 0))
+                drop++;
+            cur->row += drop;
+            b->score += my_mul(drop, 2);
+            gravity_counter = 999999;     /* force lock on next tick */
+        }
+
+        if (k == 'c' && !hold_used) {
+            hold_used = 1;
+            if (hold == (Piece *)0) {
+                hold = cur;
+                cur  = nxt;
+                nxt  = piece_new(rng_bag_next());
+            } else {
+                Piece *tmp = hold;
+                hold = cur;
+                cur  = tmp;
+                cur->row = 0;
+                cur->col = my_div(BOARD_W, 2) - 2;
+                cur->rot = 0;
+            }
+        }
+
+        render_frame(b, cur, nxt, hold, name);
+        usleep(FRAME_SLEEP_US);
     }
 
-    printf("Game exited cleanly.\n");
+end_game:
+    if (score_qualifies(table, b->score)) {
+        score_insert(table, name, b->score, b->level, b->lines);
+        score_save(table, SCORES_PATH);
+    }
+
+    piece_free(cur);
+    piece_free(nxt);
+    if (hold)
+        piece_free(hold);
+    board_free(b);
+}
+
+/* ------------------------------------------------------------------ */
+/*  main                                                               */
+/* ------------------------------------------------------------------ */
+
+int main(void)
+{
+    ScoreTable *table;
+
+    mem_init();
+    scr_init();
+    kb_init();
+    tm_init();
+    atexit(cleanup);
+
+    install_signals();
+    rng_seed(rng_seed_from_clock());
+
+    table = score_load(SCORES_PATH);
+
+    while (!g_quit) {
+        char choice = menu_show_title();
+        if (choice == 'q')
+            break;
+        if (choice == 'l') {
+            menu_show_leaderboard(table);
+            continue;
+        }
+        if (choice == 'n') {
+            char name[SCORE_NAME_MAX];
+            menu_show_name_entry(name);
+            play_one_game(name, table);
+        }
+    }
+
+    score_free(table);
     return 0;
 }

@@ -167,8 +167,10 @@ void board_apply_score(Board *b, int lines_cleared)
     static const int TABLE[5] = { 0, 100, 300, 500, 800 };
     int idx;
 
+    /* Note: this updates score only. The lines counter is owned by
+     * main.c (which adds n after every clear) so apply_score must not
+     * touch it — otherwise lines would double-count. */
     idx = my_clamp(lines_cleared, 0, 4);
-    b->lines += lines_cleared;
     b->score += my_mul(TABLE[idx], b->level + 1);
 }
 
@@ -241,16 +243,19 @@ int main(void)
     b->lines = 0;
     board_apply_score(b, 4);       /* Tetris at level 0 → 800 */
     safe_assert(b->score == 800);
+    b->lines += 4;                  /* main.c owns the line counter */
     safe_assert(b->lines == 4);
 
     board_update_level(b);
     safe_assert(b->level == 0);    /* 4 lines → level 0 still */
 
-    board_apply_score(b, 4);       /* 4 more lines at level 0 → +800 */
+    board_apply_score(b, 4);
+    b->lines += 4;
     safe_assert(b->score == 1600);
     safe_assert(b->lines == 8);
 
-    board_apply_score(b, 2);       /* 2 more → 10 total */
+    board_apply_score(b, 2);
+    b->lines += 2;
     board_update_level(b);
     safe_assert(b->level == 1);    /* 10 lines → level 1 */
 
